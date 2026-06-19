@@ -1,26 +1,32 @@
 Previous conversation summary:
 {summary}
 
-
-Recent messages between Conversator agent and girl (note, some of them may overlap with the summary):
+Recent messages between Conversator and girl:
 """
 {messages}
 """
 ###
 
-Your task is to analyze how far the Conversator agent have progressed in conversation with girl on tinder. You have summary done on previous conversation round and few last conversation messages for you disposition.
+Analyze the current state of the conversation.
 
-Ultimately conversation consists of two steps:
+The conversation has two steps:
 
-Step 1: Building a relationship. To build a relationship, Conversator needs to do next things:
-- Emotional bond. Bond builds built through conversation about things that are important to her. Such as her interests, passions, opinions, intimate details. Emotional, intense experiences. Bond is built when she told 2 important information about her.
-- Image of unavailable guy. That can be done by: disagreeing with what the girl says; jokingly blaming the girl for wooing the Conversator; Conversator disqualifying himself, Conversator laughing at himself, talking about his demands and standards. Image of unavailable guy is built when Conversator used any of the above tools.
-- Tell engaging and crazy stories about his life. To fulfill the condition, Conversator must tell 1 story from his life, presenting himself as a strong and interesting guy.
+**Step 1: Building connection**
+- Emotional Bond: She has shared meaningful personal info (passions, opinions, intimate experiences). Track: x/3.
+- Attractive Image: Conversator has used push-pull (tease → warmth), shown standards, or playfully disagreed. Track: x/1.
+- Storytelling: Conversator has told 1 engaging personal story revealing character — without bragging. Track: x/1.
 
-Step 2: Arranging a meeting.
-After step 1 is completed, conversation passes to step 2. Here Conversator proposes a meeting in a non-obligatory way. Next Conversator asks her about her number. If after that she didn't provided any contact for her, Coversator will try to build a comfort by talking about something else, not a meeting. After it will ask about contact again.
+**Step 2: Arranging meeting**
+Only enter Step 2 when ALL Step 1 conditions are met.
+- Has a non-obligatory meeting been suggested?
+- Has she responded positively?
+- Has contact info been exchanged?
 
-###
+Return JSON with "summary", "future_step", "contact" fields.
 
-Return the answer in a json format with "summary", "future_step", "contact" fields. 
+summary format:
+For step 1: "We are on step 1.\nBond. Info known about her (x/3): [list what we know].\nImage of unavailable guy (x/1): [tools used].\nFun stories (x/1): [stories told]."
+For step 2: "We are on step 2.\n[meeting proposed? number asked? comfort built?]"
 
+future_step: "step1" or "step2"
+contact: any contact info she provided (phone, Instagram, etc.), or blank

@@ -6,7 +6,7 @@ from driver.connectors.tnd_conn import TinderConnector
 from driver.driver import start_driver
 import AI_logic.respond
 import AI_logic.opener
-import AI_logic.airtable
+import AI_logic.local_store
 from dotenv import load_dotenv, find_dotenv
 from importlib import reload
 import os
@@ -44,14 +44,19 @@ def load_main_page_tnd():
 @app.get('/respond/{girl_nr}')
 def respond_nr(girl_nr: int = None):
     print("msgs request arrived")
-    messages = dating_connector.get_msgs(girl_nr)
-    name_age = dating_connector.get_name_age()
-    if not use_tindebielik:
-        response = AI_logic.respond.respond_to_girl(name_age, messages)
-    else:
-        response = AI_logic.respond_tindebielik.respond_to_girl_tindebielik(name_age, messages)
-    send_messages_endpoint(payload={'message': response})
-    return 200
+    try:
+        messages = dating_connector.get_msgs(girl_nr)
+        name_age = dating_connector.get_name_age()
+        if not use_tindebielik:
+            response = AI_logic.respond.respond_to_girl(name_age, messages)
+        else:
+            response = AI_logic.respond_tindebielik.respond_to_girl_tindebielik(name_age, messages)
+        if response:
+            send_messages_endpoint(payload={'message': response})
+        return {"status": "ok", "response": response}
+    except Exception as e:
+        print(f"respond error: {type(e).__name__}: {e}")
+        return {"error": str(e)}
 
 
 @app.get('/respond')
@@ -71,21 +76,41 @@ def respond_to_all():
 @app.get('/opener')
 def write_opener():
     print("opener request arrived")
-    name, bio = dating_connector.get_bio()
-    message = AI_logic.opener.generate_opener(name, bio)
-    send_messages_endpoint({'message': message})
-    return 200
+    try:
+        # Simplified flow: go straight to messages, open first conversation
+        name = dating_connector.open_messages_and_get_name()
+        if not name:
+            return {"error": "No conversations found. Make sure you have matches."}
+        # Generate opener — bio is optional, AI handles empty bio gracefully
+        message = AI_logic.opener.generate_opener(name, '')
+        print(f"[opener] name='{name}' message='{message}'")
+        send_messages_endpoint(payload={'message': message})
+        return {"status": "ok", "name": name, "message": message}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 
 # function to send predefined nr of openers
 @app.get('/batch_openers/{nr_openers}')
 def write_openers(nr_openers: int = None):
     print("batch of openers request arrived")
-    for i in range(nr_openers):
-        name, bio = dating_connector.get_bio()
-        message = AI_logic.opener.generate_opener(name, bio)
-        send_messages_endpoint({'message': message})
-    return 200
+    results = []
+    try:
+        for i in range(nr_openers):
+            result = dating_connector.get_bio()
+            if result is None:
+                results.append({"error": "no more matches"})
+                break
+            name, bio = result
+            message = AI_logic.opener.generate_opener(name, bio or '')
+            send_messages_endpoint({'message': message})
+            results.append({"name": name})
+        return {"status": "ok", "sent": results}
+    except Exception as e:
+        print(f"batch_openers error: {type(e).__name__}: {e}")
+        return {"error": str(e), "sent": results}
 
 
 @app.get('/opener/{girl_nr}')
@@ -107,7 +132,7 @@ def rise_girls():
 @app.get('/clear_base')
 def remove_expired():
     print("Clear base request arrived")
-    AI_logic.airtable.remove_expired_girls()
+    AI_logic.local_store.remove_expired_girls()
     return 200
 
 
@@ -130,7 +155,7 @@ def close_app():
 async def reload_modules():
     reload(AI_logic.respond)
     reload(AI_logic.opener)
-    reload(AI_logic.airtable)
+    reload(AI_logic.local_store)
 
     return {"message": "Modules reloaded"}
 

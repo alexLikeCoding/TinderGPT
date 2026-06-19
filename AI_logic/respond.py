@@ -2,11 +2,11 @@ import os
 import json
 import requests
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
 from langchain.schema import StrOutputParser
 from langchain.chains.openai_functions import create_structured_output_runnable
 from AI_logic.rule_base.rules_db_conn import query_rule
-from AI_logic.airtable import get_record, upsert_record
+from AI_logic.local_store import get_record, upsert_record
+from AI_logic.config import create_llm
 from dotenv import load_dotenv, find_dotenv
 from pushbullet import Pushbullet
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -21,19 +21,19 @@ notifications_hook = os.getenv('NOTIFICATIONS_HOOK')
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 # import prompt files
-with open(f'{current_dir}/prompts/analyzer.prompt', 'r') as file:
+with open(f'{current_dir}/prompts/analyzer.prompt', 'r', encoding='utf-8') as file:
     prompt_template = file.read()
 analyzer_prompt = PromptTemplate.from_template(prompt_template)
 
-with open(f'{current_dir}/prompts/commander_step1.prompt', 'r') as file:
+with open(f'{current_dir}/prompts/commander_step1.prompt', 'r', encoding='utf-8') as file:
     prompt_template = file.read()
 commander_step1_prompt = PromptTemplate.from_template(prompt_template)
 
-with open(f'{current_dir}/prompts/commander_step2.prompt', 'r') as file:
+with open(f'{current_dir}/prompts/commander_step2.prompt', 'r', encoding='utf-8') as file:
     prompt_template = file.read()
 commander_step2_prompt = PromptTemplate.from_template(prompt_template)
 
-with open(f'{current_dir}/prompts/writer.prompt', 'r') as file:
+with open(f'{current_dir}/prompts/writer.prompt', 'r', encoding='utf-8') as file:
     prompt_template = file.read()
 writer_prompt = PromptTemplate.from_template(prompt_template)
 
@@ -77,9 +77,9 @@ class CommanderStep2Output(BaseModel):
     tags: list = Field(..., description='Choose tags among "Suggesting meeting", "Comfort", "Providing meeting details", "Ask for contact". Make sure you are writing only the tags directly related to your suggestion. Write tags in the array like ["tag1", "tag2"], even if you proposing single tag.')
 
 
-Analyzer = ChatOpenAI(model='gpt-4o', temperature=0)
-Commander = ChatOpenAI(model='gpt-4o', temperature=0.4)
-Writer = ChatOpenAI(model='gpt-4o', temperature=0.7)
+Analyzer = create_llm(temperature=0)
+Commander = create_llm(temperature=0.3)
+Writer = create_llm(temperature=0.5)
 
 analyzer_chain = create_structured_output_runnable(AnalyzerOutput, Analyzer, analyzer_prompt)
 writer_chain = writer_prompt | Writer | StrOutputParser()
