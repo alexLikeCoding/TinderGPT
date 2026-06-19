@@ -22,7 +22,7 @@ llm = create_llm(temperature=0.5)
 chain = prompt | llm | StrOutputParser()
 
 def log_retry(retry_state):
-    print("Did not received response from OpenAI. Retrying request...")
+    print("No response from LLM. Retrying...")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(90), before_sleep=log_retry)

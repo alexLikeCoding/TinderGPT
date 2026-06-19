@@ -1,18 +1,29 @@
-import os
 import json
+import os
+import re
+import traceback
 import requests
 from langchain.prompts import PromptTemplate
-from langchain.schema import StrOutputParser
-from langchain.chains.openai_functions import create_structured_output_runnable
+from langchain.schema.runnable import RunnableLambda
 from AI_logic.rule_base.rules_db_conn import query_rule
 from AI_logic.local_store import get_record, upsert_record
 from AI_logic.config import create_llm
 from dotenv import load_dotenv, find_dotenv
 from pushbullet import Pushbullet
 from tenacity import retry, stop_after_attempt, wait_fixed
-from langchain.pydantic_v1 import BaseModel, Field
 
-# api keys import
+
+def _get_text(llm_output):
+    """Extract plain text from LLM response, handling various formats."""
+    if hasattr(llm_output, 'content'):
+        return llm_output.content
+    if isinstance(llm_output, str):
+        return llm_output
+    if isinstance(llm_output, dict):
+        return llm_output.get('content', str(llm_output))
+    return str(llm_output)
+
+# ── Setup ─────────────────────────────────────────────────────
 load_dotenv(find_dotenv())
 language = os.environ['USE_LANGUAGE']
 city = os.environ['CITY']
@@ -20,150 +31,139 @@ personality = os.getenv('PERSONALITY')
 notifications_hook = os.getenv('NOTIFICATIONS_HOOK')
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
-# import prompt files
-with open(f'{current_dir}/prompts/analyzer.prompt', 'r', encoding='utf-8') as file:
-    prompt_template = file.read()
-analyzer_prompt = PromptTemplate.from_template(prompt_template)
 
-with open(f'{current_dir}/prompts/commander_step1.prompt', 'r', encoding='utf-8') as file:
-    prompt_template = file.read()
-commander_step1_prompt = PromptTemplate.from_template(prompt_template)
+def _load_prompt(filename):
+    with open(f'{current_dir}/prompts/{filename}', 'r', encoding='utf-8') as f:
+        return PromptTemplate.from_template(f.read())
 
-with open(f'{current_dir}/prompts/commander_step2.prompt', 'r', encoding='utf-8') as file:
-    prompt_template = file.read()
-commander_step2_prompt = PromptTemplate.from_template(prompt_template)
-
-with open(f'{current_dir}/prompts/writer.prompt', 'r', encoding='utf-8') as file:
-    prompt_template = file.read()
-writer_prompt = PromptTemplate.from_template(prompt_template)
+analyzer_prompt = _load_prompt('analyzer.prompt')
+commander_s1_prompt = _load_prompt('commander_step1.prompt')
+commander_s2_prompt = _load_prompt('commander_step2.prompt')
+writer_prompt = _load_prompt('writer.prompt')
 
 pushbullet_key = os.getenv('PUSHBULLET_API_KEY')
-if pushbullet_key:
-    pushbullet = Pushbullet(pushbullet_key)
+pushbullet = Pushbullet(pushbullet_key) if pushbullet_key else None
 
-
-class AnalyzerOutput(BaseModel):
-    summary: str = Field(
-        ...,
-        description='If in step 1, it should look like: "We are on step 1.\n'
-                    'Bond. Important information I know about her (x/3): some info, another info ... .\n'
-                    'Image of unavailable guy (x/1): tools used and context.\n'
-                    'Fun stries (x/1): what stories Conversator have told.".'
-                    'If in step 2, it should look like: "We are on step 2.\n'
-                    'Provide here informations about if non-obligatory meeting was proposed, if she was asked '
-                    'about number, if comfort was built etc. and some context around that informations."'
-                         )
-    future_step: str = Field(
-        ...,
-        description='"step1" if we are currently in step 1 and not all the conditions of that step are completed, '
-                    '"step2" if we are currently in step 1 and all the conditions are completed (at least 3 info known,'
-                    '1 unavailability tool used, 1 fun story told), "step2" if we are currently in step 2.'
-    )
-    contact: str = Field(
-        ...,
-        description='type of contact and contact itself if it was provided by her in last messages. '
-                    'For example, "Phone 123456789", "Facebook Name Surname", "Instagram insta_nick". '
-                    'If no contact were provided, just leave that field blank.'
-    )
-
-
-class CommanderStep1Output(BaseModel):
-    reasoning: str = Field(..., description='Step-by-step reasoning about what abous should be next message and why in 2 sentenses.')
-    tags: list = Field(..., description='Choose tags among "Bond", "Attractive guy image", "Storytelling". Make sure you are writing only the tags directly related to your suggestion. Write tags in the array like ["tag1", "tag2"], even if you proposing single tag.')
-
-
-class CommanderStep2Output(BaseModel):
-    reasoning: str = Field(..., description='Step-by-step reasoning about what abous should be next message and why in 2 sentenses.')
-    tags: list = Field(..., description='Choose tags among "Suggesting meeting", "Comfort", "Providing meeting details", "Ask for contact". Make sure you are writing only the tags directly related to your suggestion. Write tags in the array like ["tag1", "tag2"], even if you proposing single tag.')
-
-
+# ── LLMs ──────────────────────────────────────────────────────
 Analyzer = create_llm(temperature=0)
 Commander = create_llm(temperature=0.3)
 Writer = create_llm(temperature=0.5)
 
-analyzer_chain = create_structured_output_runnable(AnalyzerOutput, Analyzer, analyzer_prompt)
-writer_chain = writer_prompt | Writer | StrOutputParser()
-
+# All chains: prompt → LLM → text output (NO function calling)
+analyzer_chain = analyzer_prompt | Analyzer | RunnableLambda(_get_text)
+writer_chain = writer_prompt | Writer | RunnableLambda(_get_text)
 
 def commander_chain(future_step):
-    if future_step == 'step1':
-        return create_structured_output_runnable(CommanderStep1Output, Commander, commander_step1_prompt)
-    else:
-        return create_structured_output_runnable(CommanderStep2Output, Commander, commander_step2_prompt)
+    prompt = commander_s1_prompt if future_step == 'step1' else commander_s2_prompt
+    return prompt | Commander | RunnableLambda(_get_text)
 
 
-# retry decorator to retry if openai request didn't return
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(90))
-def invoke_chain(chain, args, module_name=None):
+def _extract_json(text):
+    """Robust JSON extraction from LLM text output.
+    Handles markdown fences, stray text before/after JSON."""
+    # Try direct parse first
+    text = text.strip()
     try:
-        output = chain.invoke(args)
-        output = json.loads(output)
-        print(f'\n{module_name} says:')
-        print(json.dumps(output, indent=4, ensure_ascii=False))
-        return output
-    except Exception as e:
-        print(f"Error encountered: \n{str(e)}]n{str(e.args)}\nRetrying...")
-        raise e
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try extracting from markdown code fences
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Try finding the first { ... } block
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f'Could not extract JSON from: {text[:200]}')
+
+
+def _invoke_json(chain, args, module_name=''):
+    """Invoke a text chain and extract JSON from the output."""
+    raw = chain.invoke(args)
+    if not raw or not raw.strip():
+        raise ValueError(f'{module_name} returned empty response')
+    result = _extract_json(raw)
+    print(f'[{module_name}] OK')
+    return result
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(90))
-def invoke_stuctured_runnable(chain, args, module_name=None):
+def _invoke_with_retry(chain, args, name=''):
     try:
-        output = chain.invoke(args)
-        print(f'\n{module_name} says:')
-        print(output)
-        return output
+        return _invoke_json(chain, args, name)
     except Exception as e:
-        print(f"Error encountered: \n{str(e)}]n{str(e.args)}\nRetrying...")
-        raise e
+        print(f'[retry] {name}: {type(e).__name__}: {e}')
+        traceback.print_exc()
+        raise
 
+
+# ── Main entry ────────────────────────────────────────────────
 
 def respond_to_girl(name_age, messages):
     previous_summary = get_record(name_age)
-    analyzer_output = invoke_stuctured_runnable(
+
+    # 1. Analyze conversation state
+    analyzer_out = _invoke_with_retry(
         analyzer_chain,
         {'summary': previous_summary, 'messages': messages},
-        'Analyzer'
+        'Analyzer',
     )
+    future_step = analyzer_out.get('future_step', 'step1')
+    summary = analyzer_out.get('summary', '')
+    contact = analyzer_out.get('contact', '')
 
-    future_step = analyzer_output.future_step
-    summary = analyzer_output.summary
-    contact = analyzer_output.contact
-
+    # 2. If she gave contact info → notify and stop
     if contact:
         if notifications_hook:
             requests.get(notifications_hook, params={'name_age': name_age, 'contact': contact})
-        pushbullet.push_note(f"I planned date with {name_age}", contact)
+        if pushbullet:
+            pushbullet.push_note(f'Date planned with {name_age}', contact)
         upsert_record(name_age, not_to_rise=True)
-        return
+        return None
 
-    commander_output = invoke_stuctured_runnable(
+    # 3. Commander picks strategy tags
+    commander_out = _invoke_with_retry(
         commander_chain(future_step),
         {'summary': summary, 'messages': messages},
-        'Commander'
+        'Commander',
     )
-    tags = commander_output.tags
-    rules = "\n###\n- ".join([query_rule(tag) for tag in tags])
+    tags = commander_out.get('tags', [])
+    rules = '\n###\n- '.join([query_rule(tag) for tag in tags])
 
-    writer_output = invoke_chain(writer_chain, {
+    # 4. Writer generates the actual reply
+    writer_out_raw = writer_chain.invoke({
         'rules': rules,
         'messages': messages,
         'summary': summary,
         'language': language,
         'city': city,
         'personality': personality,
-    }, 'Writer')
+    })
+    try:
+        writer_out = _extract_json(writer_out_raw)
+    except ValueError:
+        # Writer sometimes returns plain text instead of JSON
+        writer_out = {'reasoning': '', 'messages': [writer_out_raw.strip()]}
 
-    print("writer_output: ")
-    print(writer_output)
-    messages_to_send = writer_output["messages"]
-    # update summary in case of attractive guy image or storytelling
+    messages_to_send = writer_out.get('messages', [])
+    if isinstance(messages_to_send, str):
+        messages_to_send = [messages_to_send]
+
+    # 5. If we told a story or built image, re-analyze summary
     if 'Attractive guy image' in tags or 'Storytelling' in tags:
-        analyzer2_output = invoke_stuctured_runnable(
+        a2 = _invoke_with_retry(
             analyzer_chain,
-            {'summary': summary, 'messages': f'Conversator: {messages_to_send}'}, 'Analyzer'
+            {'summary': summary, 'messages': f'Conversator: {messages_to_send}'},
+            'Analyzer(2)',
         )
-        summary = analyzer2_output.summary
+        summary = a2.get('summary', summary)
 
     upsert_record(name_age, summary)
     return messages_to_send

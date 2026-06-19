@@ -30,3 +30,6 @@ For step 2: "We are on step 2.\n[meeting proposed? number asked? comfort built?]
 
 future_step: "step1" or "step2"
 contact: any contact info she provided (phone, Instagram, etc.), or blank
+
+Return ONLY a valid JSON object. No markdown, no explanation outside the JSON.
+Example: {{"summary": "We are on step 1...", "future_step": "step1", "contact": ""}}

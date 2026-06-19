@@ -38,5 +38,5 @@ Write your message.
 Return a JSON with "reasoning" and "messages":
 {{
 "reasoning": "Think step by step: what stage are we at? What's the right push-pull balance? What do I want her to feel after reading this?",
-"messages": ["Write in {language}. 1-3 short messages, natural and concise.", "No more than 4 sentences total across all messages."]
+"messages": ["Detect the language the girl is using in the conversation above. Reply in the SAME language she uses. If she writes in Chinese, reply in Chinese. If she writes in English, reply in English. 1-3 short messages, natural and concise.", "No more than 4 sentences total across all messages."]
 }}
