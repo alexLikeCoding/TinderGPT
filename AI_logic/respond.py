@@ -6,11 +6,61 @@ import requests
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnableLambda
 from AI_logic.rule_base.rules_db_conn import query_rule
-from AI_logic.local_store import get_record, upsert_record
+from AI_logic.local_store import get_record, upsert_record, is_replied, set_replied, clear_replied
 from AI_logic.config import create_llm
 from dotenv import load_dotenv, find_dotenv
 from pushbullet import Pushbullet
 from tenacity import retry, stop_after_attempt, wait_fixed
+
+
+def _has_chinese(text):
+    """Return True if text contains Chinese characters."""
+    return bool(re.search(r'[一-鿿]', text or ''))
+
+
+# Meeting-request keywords (case-insensitive, matches substrings)
+_MEET_KEYWORDS = [
+    'meet', '见面', '见个面', 'hang out', 'date', 'coffee', 'drink',
+    'grab a', 'catch up', '出来', '碰面', '面基', '约', '见一面',
+    'let\'s meet', 'wanna meet', '想见', '要不要见', 'can we meet',
+    'are you free', '有空吗', '有空出来', '什么时候见', '出来见面',
+    '周末有空', '有空见面', 'we meet', 'shall we', 'how about we',
+]
+
+
+def _detected_meeting_request(messages):
+    """Return True if the girl's messages contain a meeting request."""
+    if not messages:
+        return False
+    lower = messages.lower()
+    return any(kw in lower for kw in _MEET_KEYWORDS)
+
+
+def _send_telegram(name_age, messages):
+    """Notify user via Telegram that a girl wants to meet."""
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    if not token or not chat_id:
+        return
+    # Truncate recent messages for context
+    preview = messages.strip()[-300:] if messages else '(no messages)'
+    text = (
+        f'💬 *{name_age}* wants to meet!\n\n'
+        f'Recent messages:\n'
+        f'```\n{preview}\n```'
+    )
+    try:
+        requests.post(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            json={
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': 'Markdown',
+            },
+            timeout=10,
+        )
+    except Exception:
+        pass  # Silent fail — don't block the bot for notification issues
 
 
 def _get_text(llm_output):
@@ -47,7 +97,7 @@ pushbullet = Pushbullet(pushbullet_key) if pushbullet_key else None
 # ── LLMs ──────────────────────────────────────────────────────
 Analyzer = create_llm(temperature=0)
 Commander = create_llm(temperature=0.3)
-Writer = create_llm(temperature=0.5)
+Writer = create_llm(temperature=0.3)
 
 # All chains: prompt → LLM → text output (NO function calling)
 analyzer_chain = analyzer_prompt | Analyzer | RunnableLambda(_get_text)
@@ -107,9 +157,32 @@ def _invoke_with_retry(chain, args, name=''):
 # ── Main entry ────────────────────────────────────────────────
 
 def respond_to_girl(name_age, messages):
+    # 0. Meeting request? Notify ONCE via Telegram, then stay silent.
+    if _detected_meeting_request(messages):
+        if not is_replied(name_age):
+            print(f'[{name_age}] Meeting request - notifying Telegram')
+            _send_telegram(name_age, messages)
+        set_replied(name_age)
+        return None
+
+    # 1. Decide whether to reply.
+    if messages and 'Girl:' in messages:
+        clear_replied(name_age)
+    elif messages and 'You:' in messages:
+        # We've sent messages before but she hasn't replied - stay silent
+        set_replied(name_age)
+    # else: no messages or empty - don't touch the flag
+
+    if is_replied(name_age):
+        print(f'[{name_age}] Not her turn - skipping')
+        return None
+
+    # 2. Detect language. If she writes Chinese, reply in Chinese.
+    reply_language = 'chinese' if _has_chinese(messages) else language
+
     previous_summary = get_record(name_age)
 
-    # 1. Analyze conversation state
+    # 3. Analyze conversation state
     analyzer_out = _invoke_with_retry(
         analyzer_chain,
         {'summary': previous_summary, 'messages': messages},
@@ -119,7 +192,7 @@ def respond_to_girl(name_age, messages):
     summary = analyzer_out.get('summary', '')
     contact = analyzer_out.get('contact', '')
 
-    # 2. If she gave contact info → notify and stop
+    # 4. If she gave contact info - notify and stop
     if contact:
         if notifications_hook:
             requests.get(notifications_hook, params={'name_age': name_age, 'contact': contact})
@@ -128,7 +201,7 @@ def respond_to_girl(name_age, messages):
         upsert_record(name_age, not_to_rise=True)
         return None
 
-    # 3. Commander picks strategy tags
+    # 5. Commander picks strategy tags
     commander_out = _invoke_with_retry(
         commander_chain(future_step),
         {'summary': summary, 'messages': messages},
@@ -137,26 +210,25 @@ def respond_to_girl(name_age, messages):
     tags = commander_out.get('tags', [])
     rules = '\n###\n- '.join([query_rule(tag) for tag in tags])
 
-    # 4. Writer generates the actual reply
+    # 6. Writer generates the reply
     writer_out_raw = writer_chain.invoke({
         'rules': rules,
         'messages': messages,
         'summary': summary,
-        'language': language,
+        'language': reply_language,
         'city': city,
         'personality': personality,
     })
     try:
         writer_out = _extract_json(writer_out_raw)
     except ValueError:
-        # Writer sometimes returns plain text instead of JSON
         writer_out = {'reasoning': '', 'messages': [writer_out_raw.strip()]}
 
     messages_to_send = writer_out.get('messages', [])
     if isinstance(messages_to_send, str):
         messages_to_send = [messages_to_send]
 
-    # 5. If we told a story or built image, re-analyze summary
+    # 7. Re-analyze summary if we told a story or built image
     if 'Attractive guy image' in tags or 'Storytelling' in tags:
         a2 = _invoke_with_retry(
             analyzer_chain,
@@ -166,4 +238,5 @@ def respond_to_girl(name_age, messages):
         summary = a2.get('summary', summary)
 
     upsert_record(name_age, summary)
+    set_replied(name_age)
     return messages_to_send

@@ -29,9 +29,15 @@ with _get_conn() as conn:
             name_age TEXT UNIQUE NOT NULL,
             summary TEXT DEFAULT '',
             last_contact TEXT DEFAULT '',
-            not_to_rise INTEGER DEFAULT 0
+            not_to_rise INTEGER DEFAULT 0,
+            we_replied INTEGER DEFAULT 1
         )
     ''')
+    for col in ['we_replied']:
+        try:
+            conn.execute(f'ALTER TABLE conversations ADD COLUMN {col} INTEGER DEFAULT 1')
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 
@@ -99,6 +105,41 @@ def girls_to_rise():
             if start_date > date_of_record > end_date:
                 result.append(row['name_age'])
     return result
+
+
+def is_replied(name_age):
+    """Return True if we've already replied and she hasn't messaged back."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            'SELECT we_replied FROM conversations WHERE name_age = ?',
+            (name_age,)
+        ).fetchone()
+        return bool(row and row['we_replied'])
+
+
+def set_replied(name_age):
+    """Mark that we replied. No more replies until she messages back."""
+    with _get_conn() as conn:
+        conn.execute(
+            'UPDATE conversations SET we_replied = 1 WHERE name_age = ?',
+            (name_age,)
+        )
+        if conn.total_changes == 0:
+            conn.execute(
+                'INSERT INTO conversations (name_age, we_replied) VALUES (?, 1)',
+                (name_age,)
+            )
+        conn.commit()
+
+
+def clear_replied(name_age):
+    """She sent a new message — allow us to reply again."""
+    with _get_conn() as conn:
+        conn.execute(
+            'UPDATE conversations SET we_replied = 0 WHERE name_age = ?',
+            (name_age,)
+        )
+        conn.commit()
 
 
 def remove_expired_girls():

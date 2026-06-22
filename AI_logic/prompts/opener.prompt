@@ -4,24 +4,25 @@ Girl's profile:
 """
 
 ###
-You're writing your first message to {name} on Tinder. You're a warm, confident guy who's genuinely curious about people — not trying to impress, just being yourself.
+Write ONE opening message to {name} on Tinder in {language}.
 
-Rules:
+If her profile has actual personal details (hobbies, interests, job, etc.):
+- Pick ONE detail and respond with warmth and genuine curiosity.
+- Tone: friendly, humble, interested in HER — not evaluating or testing her.
+- Example: "Also a hiking fan — KL trails or somewhere further out?"
 
-✅ What a good opener looks like:
-- Spot something interesting in her profile and respond to it like a human — with curiosity or a playful observation
-- Example vibes: "A hike and a sunset? You must know all the best trails around here." or "So the profile says 'foodie' but what's the most disappointing meal you've ever had?"
-- If her profile is empty or unclear, say something charming and simple: "Zero bio, all mystery. I respect the strategy 😄"
-- Keep it under 30 words, in {language}
+If her profile is empty or very short:
+- Just say: "hi"
+- Nothing else. One word.
 
-❌ What to absolutely avoid:
-- "hi", "hey", "how are you"
-- Commenting on her looks, photos, age, distance, or Tinder settings
-- Proposing a meeting or asking for contact
-- Being sarcastic, harsh, or edgy — you're not a stand-up comedian roasting someone
-- Sounding like you're evaluating her or reading her profile like a checklist
-- Any tone that could be interpreted as rude or dismissive
+CRITICAL RULES — these will get you blocked:
+- NEVER challenge her: "prove it", "are you worth my time", "convince me", "impress me"
+- NEVER criticize her profile: "your profile tells me nothing", "zero bio", "no info", "you're a mystery"
+- NEVER neg or put her down, even as a "joke"
+- NEVER use [brackets] or placeholder text
+- NEVER comment on her looks, age, distance, or photos
+- NEVER propose meeting
 
-You're not here to prove you're clever. You're here to start a conversation that she wants to continue.
+Keep it under 20 words. One sentence is fine. You are starting a friendly conversation, not a job interview.
 
-Return ONLY the message text. No quotes, no explanation.
+Return ONLY the message text. No quotes, no JSON, no explanation.

@@ -19,11 +19,7 @@ BACK_BTN_XPATH  = ('//button[contains(@aria-label,"Back")] | '
                    '//button[contains(@aria-label,"返回")] | '
                    '//a[contains(@href,"/app/recs")]')
 
-# URL patterns that are NOT conversation pages
-_NOT_CONVERSATION = {'likes-you', 'profile', 'explore', 'recs#',
-                     'recs?', 'help.tinder', 'go.tinder', 'login'}
-
-
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 class TinderConnector:
     def __init__(self, driver):
         self.driver = driver
@@ -110,16 +106,24 @@ class TinderConnector:
 
     # ── conversation navigation ───────────────────────────────
 
-    def _enter_conversation(self, girl_nr=None):
-        """Open a conversation. Two strategies: '匹配' tab or '消息' panel."""
-        print(f'Entering conversation (nr={girl_nr})')
+    def _enter_conversation(self, girl_nr=None, tab='auto'):
+        """Open a conversation. tab='match' for new matches only,
+        tab='msg' for existing conversations, tab='auto' tries both."""
+        print(f'Entering conversation (nr={girl_nr}, tab={tab})')
         try:
             self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
             time.sleep(0.5)
         except Exception:
             pass
 
-        for btn_texts in [['配对', 'Matches'], ['消息', 'Messages']]:
+        if tab == 'match':
+            strategies = [['配对', 'Matches']]
+        elif tab == 'msg':
+            strategies = [['消息', 'Messages']]
+        else:
+            strategies = [['配对', 'Matches'], ['消息', 'Messages']]
+
+        for btn_texts in strategies:
             self.driver.get('https://tinder.com/app/recs')
             time.sleep(random.uniform(3, 5))
             for txt in btn_texts:
@@ -166,17 +170,93 @@ class TinderConnector:
         return False
 
     def enter_messages(self, girl_nr=None):
-        if not self._enter_conversation(girl_nr):
+        if not self._enter_conversation(girl_nr, tab='msg'):
             raise Exception('Cannot open any conversation')
         print('Message history entered')
 
-    def open_messages_and_get_name(self):
-        if not self._enter_conversation(girl_nr=None):
-            return None
-        return self.get_name_age()
+    def open_match_and_get_info(self):
+        """Open a NEW match from '配对' tab. Returns (name, bio).
+        Reads the profile card BEFORE entering conversation to grab bio text."""
+        print('open_match_and_get_info()')
+        try:
+            self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+        except Exception:
+            pass
+        self.driver.get('https://tinder.com/app/recs')
+        time.sleep(random.uniform(3, 5))
+
+        # Click '配对' tab
+        clicked = False
+        for txt in ['配对', 'Matches']:
+            try:
+                btns = self.driver.find_elements(
+                    By.XPATH, f'//button[text()="{txt}"]')
+                if btns:
+                    btns[0].click()
+                    time.sleep(random.uniform(2, 3))
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            return None, ''
+
+        # Click the first match — this opens a profile card (NOT chat yet)
+        match_clicked = False
+        for selector in ['a[href*="/app/messages/"]', 'div[role="link"]']:
+            try:
+                els = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                convs = [e for e in els
+                         if e.get_attribute('href')
+                         and '/messages/' in (e.get_attribute('href') or '')]
+                if convs:
+                    convs[0].click()
+                    time.sleep(random.uniform(2, 4))
+                    match_clicked = True
+                    break
+            except Exception:
+                continue
+        if not match_clicked:
+            return None, ''
+
+        # Now on the profile card — extract name and bio
+        name = self.get_name_age()
+
+        # Try to get bio text from the profile card (before entering chat)
+        bio = ''
+        try:
+            # The profile card might be a dialog or a full page
+            body = self.driver.find_element(By.TAG_NAME, 'body').text
+            # Try to find the bio section — it's usually between the name and
+            # the "基本信息" (Basic Info) section
+            lines = body.split('\n')
+            name_idx = -1
+            for i, line in enumerate(lines):
+                if name and name in line:
+                    name_idx = i
+                    break
+            if name_idx >= 0:
+                # Bio is typically the text right after the name, before
+                # any section headers like "基本信息" / "兴趣" / "距离"
+                bio_lines = []
+                for line in lines[name_idx + 1:]:
+                    if any(kw in line for kw in
+                           ['基本信息', '兴趣', '距离', 'km', '公里',
+                            'Instagram', 'Spotify', 'Anthem',
+                            '举报', '屏蔽', '配对', '消息']):
+                        break
+                    if line.strip() and line != name:
+                        bio_lines.append(line.strip())
+                bio = ' '.join(bio_lines)
+        except Exception:
+            pass
+
+        print(f'open_match_and_get_info → name="{name}" bio="{bio[:100] if bio else "(empty)"}"')
+        return name, bio or ''
 
     def get_msgs(self, girl_nr=None):
-        if not self._enter_conversation(girl_nr):
+        if not self._enter_conversation(girl_nr, tab='msg'):
             raise Exception('Cannot open any conversation')
         messages = []
         for xp in ['//div[@dir="auto"]', '//span[@dir="auto"]',
@@ -191,14 +271,29 @@ class TinderConnector:
         if not messages:
             messages = self.driver.find_elements(
                 By.CSS_SELECTOR, 'div[dir="auto"], span[dir="auto"]')
+        if not messages:
+            return ''
         messages = messages[-8:]
         return align_messages(messages)
 
     def count_new_messages(self):
-        self.driver.get('https://tinder.com/app/messages')
-        time.sleep(random.uniform(2, 3))
-        return len(self.driver.find_elements(
+        """Count unread conversations via the '消息' panel."""
+        self.driver.get('https://tinder.com/app/recs')
+        time.sleep(random.uniform(3, 5))
+        for txt in ['消息', 'Messages']:
+            try:
+                btns = self.driver.find_elements(
+                    By.XPATH, f'//button[text()="{txt}"]')
+                if btns:
+                    btns[0].click()
+                    time.sleep(random.uniform(2, 3))
+                    break
+            except Exception:
+                continue
+        count = len(self.driver.find_elements(
             By.CSS_SELECTOR, 'a[href*="/app/messages/"]'))
+        print(f'New messages: {count}')
+        return count
 
     def get_name_age(self):
         for xp in ['//h1', '//h1/span', '//header//span',
@@ -251,16 +346,59 @@ class TinderConnector:
 # ── misc ─────────────────────────────────────────────────────
 
 def align_messages(messages):
-    your_color = 'rgb(255, 255, 255)'
-    her_color = 'rgb(33, 38, 46)'
-    text = ''
+    """Label messages as 'You:' or 'Girl:' based on the text prefix
+    Tinder adds to each message bubble."""
+    if not messages:
+        return ''
+    print(f'[align] {len(messages)} raw elements')
+
+    # Dump parent HTML of first and last message to understand DOM structure
+    for idx in [0, -1]:
+        try:
+            parent = messages[idx].find_element(By.XPATH, '..')
+            gp = parent.find_element(By.XPATH, '..')
+            print(f'[align] msg[{idx}] parent tag=<{parent.tag_name}> '
+                  f'class="{parent.get_attribute("class") or ""}" '
+                  f'style="{parent.get_attribute("style") or ""}"')
+            print(f'[align] msg[{idx}] grandparent tag=<{gp.tag_name}> '
+                  f'class="{gp.get_attribute("class") or ""}" '
+                  f'style="{gp.get_attribute("style") or ""}"')
+        except Exception as e:
+            print(f'[align] msg[{idx}] dump error: {e}')
+
+    results = []
+    seen = set()
     for msg in messages:
         try:
-            color = msg.value_of_css_property('color')
+            raw = msg.text.strip()
+            # Skip timestamps and status messages
+            if not raw:
+                continue
+            if any(kw in raw for kw in ('发送', 'Sent', '已读', 'Read', '已发送')):
+                continue
+            # Deduplicate (Tinder shows each message twice in DOM)
+            key = raw[:60]
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # Tinder prepends "你:" or "You:" on OUR message bubbles
+            # Remove the prefix and label accordingly
+            if raw.startswith('你:'):
+                content = raw[2:].strip()
+                results.append(('You', content))
+            elif raw.startswith('You:'):
+                content = raw[4:].strip()
+                results.append(('You', content))
+            else:
+                results.append(('Girl', raw))
         except Exception:
             continue
-        if color == your_color:
-            text += 'You: ' + msg.text + '\n'
-        elif color == her_color:
-            text += 'Girl: ' + msg.text + '\n'
+
+    text = ''
+    for label, content in results:
+        text += f'{label}: {content}\n'
+    print(f'[align] → {len(results)} messages: '
+          f'You={sum(1 for l,_ in results if l=="You")} '
+          f'Girl={sum(1 for l,_ in results if l=="Girl")}')
     return text

@@ -94,24 +94,30 @@ cd e:\my-sweet-agent\TinderGPT
 
 ### 手动操作
 
-| 端点 | 作用 |
-|------|------|
-| `start_tnd` | 打开 Tinder |
-| `opener` | 给第一个匹配发开场白 (英语) |
-| `respond` | 回复第一个对话 |
-| `respond_all` | 回复所有未读消息 |
-| `respond/{n}` | 回复第 n 个对话 |
-| `rise` | 给 3-7 天沉默的匹配发复活消息 |
-| `clear_base` | 清理 7 天以上过期记录 |
-| `reload` | 热重载 prompt，无需重启 |
-| `close` | 关闭 Tinder 页面 |
+| 端点 | 查找标签 | 作用 |
+|------|---------|------|
+| `start_tnd` | — | 打开 Tinder 主页 |
+| `opener` | "配对" | 给新匹配发开场白 (英语)。只在配对页操作，不碰消息页 |
+| `respond` | "消息" | 回复第一个对话。如果最后一条是我们发的则自动跳过 |
+| `respond_all` | "消息" | 回复所有未读消息，跳过已回复的 |
+| `respond/{n}` | "消息" | 回复第 n 个对话 |
+| `rise` | "消息" | 给 3-7 天沉默的匹配发复活消息 |
+| `clear_base` | — | 清理 7 天以上过期记录 |
+| `reload` | — | 热重载 prompt，无需重启 |
+| `close` | — | 关闭 Tinder 页面 |
 
 ### 日常操作
 
 1. 手机刷 Tinder 右滑
-2. 浏览器 `localhost:8080/opener` 发开场白
-3. 等对方回复 → `auto_respond.py` 自动回复 (或手动 `localhost:8080/respond`)
+2. `auto_respond.py` 自动发开场白 + 自动回复（每 2 分钟轮询）
+3. 也可手动：`localhost:8080/opener` 或 `localhost:8080/respond`
 4. AI 聊到火候自动要号码，Pushbullet 通知你
+
+### 行为规则
+
+- **开场白** 只看"配对"标签页（新匹配），聊过的不再发
+- **回复** 只看"消息"标签页，对方没回复之前不会追发第二条
+- **语言**：开场白默认英语，回复自动匹配对方语言
 
 ### 探测 Tinder 页面结构
 

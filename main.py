@@ -1,3 +1,8 @@
+import warnings
+warnings.simplefilter('ignore', FutureWarning)
+warnings.filterwarnings('ignore', message='.*urllib3.*')
+warnings.filterwarnings('ignore', message='.*chardet.*')
+
 from fastapi import FastAPI, Response
 import uvicorn
 import argparse
@@ -68,7 +73,7 @@ def respond_to_all():
     print("respond all request arrived")
     new_messages_nr = dating_connector.count_new_messages()
     for i in range(new_messages_nr):
-        respond()
+        respond_nr(girl_nr=i + 1)
 
     return 200
 
@@ -77,14 +82,18 @@ def respond_to_all():
 def write_opener():
     print("opener request arrived")
     try:
-        # Simplified flow: go straight to messages, open first conversation
-        name = dating_connector.open_messages_and_get_name()
-        if not name:
-            return {"error": "No conversations found. Make sure you have matches."}
-        # Generate opener — bio is optional, AI handles empty bio gracefully
-        message = AI_logic.opener.generate_opener(name, '')
+        result = dating_connector.open_match_and_get_info()
+        if not result or not result[0]:
+            return {"error": "No new matches found."}
+        name, bio = result
+        if AI_logic.local_store.is_replied(name):
+            print(f"[opener] {name} already messaged — skipping")
+            return {"status": "skipped", "name": name, "reason": "already messaged"}
+        print(f"[opener] name='{name}' bio='{bio[:150]}'")
+        message = AI_logic.opener.generate_opener(name, bio)
         print(f"[opener] name='{name}' message='{message}'")
         send_messages_endpoint(payload={'message': message})
+        AI_logic.local_store.set_replied(name)
         return {"status": "ok", "name": name, "message": message}
     except Exception as e:
         import traceback
@@ -99,13 +108,17 @@ def write_openers(nr_openers: int = None):
     results = []
     try:
         for i in range(nr_openers):
-            result = dating_connector.get_bio()
-            if result is None:
+            result = dating_connector.open_match_and_get_info()
+            if not result or not result[0]:
                 results.append({"error": "no more matches"})
                 break
             name, bio = result
-            message = AI_logic.opener.generate_opener(name, bio or '')
-            send_messages_endpoint({'message': message})
+            if AI_logic.local_store.is_replied(name):
+                results.append({"name": name, "skipped": "already messaged"})
+                continue
+            message = AI_logic.opener.generate_opener(name, bio)
+            send_messages_endpoint(payload={'message': message})
+            AI_logic.local_store.set_replied(name)
             results.append({"name": name})
         return {"status": "ok", "sent": results}
     except Exception as e:
